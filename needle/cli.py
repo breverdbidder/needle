@@ -8,9 +8,7 @@ HELP = """usage: needle <command> [options]
 
   run            run a checkpoint on a query (JAX, Needle 3)
   finetune       train a LoRA adapter on JSONL data (--layers N for a rung)
-  generate-data  synthesise training data via OpenRouter
   build          export a checkpoint (+ adapter) to a .cact archive
-  platform       fine-tune, generate data and download models on cactuscompute.com
   download       needle3 | needle3.safetensors | <platform> | model-<id> | <org>/<repo>[/<file>.cact]
   fetch          fetch the engine library for this platform
   playground     serve the browser playground
@@ -168,7 +166,7 @@ def main():
     p.add_argument("--seed", type=int, default=0,
                    help="Random seed for LoRA init, validation split, and epoch shuffling")
     p.add_argument("--generate", type=int, default=0,
-                   help="Generate N extra examples via OpenRouter before training (0 = off)")
+                   help="Disabled in Winner Data local-only pilot")
     p.add_argument("--model", type=str, default="deepseek/deepseek-flash-latest",
                    help="OpenRouter model for --generate")
     p.add_argument("--workers", type=int, default=8,
@@ -176,16 +174,6 @@ def main():
     p.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     p.add_argument("--out", type=str, default=None,
                    help="Output adapter path (.safetensors, or .pkl)")
-
-    p = sub.add_parser("generate-data")
-    p.add_argument("--tools", type=str, default=None, help="Tool schemas JSON to seed generation")
-    p.add_argument("--augment", type=str, default=None, help="Existing JSONL to expand")
-    p.add_argument("--num-samples", type=int, default=100)
-    p.add_argument("--batch-size", type=int, default=25)
-    p.add_argument("--workers", type=int, default=16,
-                   help="Concurrent OpenRouter requests (default: 16)")
-    p.add_argument("--model", type=str, default="deepseek/deepseek-flash-latest")
-    p.add_argument("--output", type=str, default=None)
 
     p = sub.add_parser("build")
     p.add_argument("checkpoint", type=str, nargs="?", default=None,
@@ -212,41 +200,6 @@ def main():
                    help="One size of a fine-tuned model-<id> (default: every size)")
     p.add_argument("--generation", type=int, choices=[2, 3], default=3,
                    help="Engine generation when downloading a platform build (default: 3)")
-
-    p = sub.add_parser("platform")
-    verbs = p.add_subparsers(dest="verb")
-    v = verbs.add_parser("finetune")
-    v.add_argument("train", type=str, help="Training .jsonl (a path, or a file-<id> already uploaded)")
-    v.add_argument("validation", type=str, help="Validation .jsonl or file-<id>")
-    v.add_argument("test", type=str, help="Test .jsonl or file-<id>")
-    v.add_argument("--max-depth", type=int, default=None,
-                   help="Largest size to train, 2 up to the base depth (default: the base depth)")
-    v.add_argument("--suffix", type=str, default=None, help="Name for the job and its models")
-    v.add_argument("--out", type=str, default=".", help="Directory for the downloaded .cact files")
-    v.add_argument("--depth", type=int, default=None,
-                   help="Download one size only (default: every size)")
-    v.add_argument("--no-wait", action="store_true",
-                   help="Submit and print the job id without polling or downloading")
-    v = verbs.add_parser("generate")
-    v.add_argument("--tools", type=str, required=True, help="Tool definitions .json, flat or OpenAI form")
-    v.add_argument("--examples", type=int, default=1000, help="Examples to generate, 100 to 10,000")
-    v.add_argument("--description", type=str, default=None, help="What the product does")
-    v.add_argument("--message", action="append", default=None,
-                   help="An example user message; repeat for several")
-    v.add_argument("--suffix", type=str, default=None, help="Name for the job and its files")
-    v.add_argument("--out", type=str, default=".", help="Directory for the generated .jsonl files")
-    v.add_argument("--no-wait", action="store_true",
-                   help="Submit and print the job id without polling or downloading")
-    v = verbs.add_parser("jobs")
-    v.add_argument("job_id", type=str, nargs="?", default=None, help="One job to show in full")
-    v.add_argument("--wait", action="store_true", help="Poll that job until it ends")
-    v.add_argument("--out", type=str, default=None,
-                   help="Download what the finished job produced into this directory")
-    v.add_argument("--depth", type=int, default=None, help="One size of a fine-tuned model (default: every size)")
-    v = verbs.add_parser("models")
-    v.add_argument("model_id", type=str, nargs="?", default=None, help="One model to show with its sizes")
-    v = verbs.add_parser("files")
-    verbs.add_parser("billing")
 
     p = sub.add_parser("fetch")
     p.add_argument("--out", type=str, default=None,
@@ -276,11 +229,10 @@ def main():
         from .model.run import main as run_main
         run_main(args)
     elif args.command == "finetune":
+        if getattr(args, "generate", 0):
+            raise SystemExit("OpenRouter data generation is disabled in the Winner Data local-only pilot")
         from .model.finetune import finetune_local
         finetune_local(args)
-    elif args.command == "generate-data":
-        from .model.finetune import generate_main
-        generate_main(args)
     elif args.command == "build":
         from .model.finetune import build_main
         build_main(args)
@@ -289,28 +241,13 @@ def main():
         from huggingface_hub import hf_hub_download, list_repo_files
         from .agent import fetch
         kind, target = _download_target(args.spec)
-        if kind == "platform":
-            paths = fetch.download_platform(target, args.out,
-                                            generation=args.generation)
-            if args.generation >= 3:
-                paths.append(fetch.fetch_weights(args.generation, os.path.join(args.out, target)))
-            for path in paths:
-                print(f"  {'file':<9} {path}  {os.path.getsize(path) / 1e6:.2f} MB")
-            runner = next((p for p in paths
-                           if os.path.basename(p) in ("needle", "needle.exe")), None)
-            if runner:
-                weights = f" --model {fetch.base_weights(args.generation)}" if args.generation >= 3 else ""
-                print(f"  {'next':<9} {runner}{weights} --tools tools.json --serve")
+        if kind in ("platform", "hosted"):
+            raise SystemExit("hosted Cactus platform access is disabled in the Winner Data local-only pilot")
         elif kind == "base":
             os.makedirs(args.out, exist_ok=True)
             path = fetch.fetch_weights(target, args.out)
             print(f"  {'weights':<9} {path}  {os.path.getsize(path) / 1e6:.2f} MB")
             print(f"  {'next':<9} needle.Needle(weights={path!r}, tools=[...])")
-        elif kind == "hosted":
-            from .platform import Platform
-            for path in Platform().download(target, args.out, depth=args.depth):
-                print(f"  {'weights':<9} {path}  {os.path.getsize(path) / 1e6:.2f} MB")
-            print(f"  {'next':<9} needle.Needle(weights=<path>, tools=[...], auto_date=False)")
         elif kind == "checkpoint":
             generation = 2 if target.startswith("needle2") else 3
             path = fetch.fetch_checkpoint(target, os.path.join(args.out, fetch.CHECKPOINT_PREFIX),
@@ -344,9 +281,6 @@ def main():
         print(f"  {'engine':<9} {path}")
         print(f"  {'deploy':<9} copy to ~/.cache/cactus-needle/v{generation}/{version}/ "
               f"on the device, or point NEEDLE{generation}_LIB_PATH at the file")
-    elif args.command == "platform":
-        from .platform import main as platform_main
-        platform_main(args)
     elif args.command == "playground":
         from .playground.server import main as playground_main
         playground_main(args)
