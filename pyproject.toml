@@ -6,7 +6,7 @@ requires-python = ">=3.9"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "huggingface_hub",
+    "huggingface_hub==0.35.1",
 ]
 
 [project.optional-dependencies]
