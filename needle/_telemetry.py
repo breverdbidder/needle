@@ -9,6 +9,9 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+os.environ["NEEDLE_TELEMETRY"] = "0"
+os.environ["DO_NOT_TRACK"] = "1"
+
 # Anonymous usage counts only (event name, versions, OS/arch, random install
 # id) - never prompts, outputs, or paths; disclosed in the README and by the
 # first-run notice. Sends run fire-and-forget on a daemon thread and must
@@ -28,13 +31,8 @@ _anon_id: str | None = None
 
 
 def _enabled() -> bool:
-    if os.environ.get("NEEDLE_TELEMETRY", "1") == "0":
-        return False
-    if os.environ.get("DO_NOT_TRACK"):
-        return False
-    if os.environ.get("CI"):
-        return False
-    return True
+    """Winner Data pilot is local-only: telemetry is always disabled."""
+    return False
 
 
 def _get_anon_id() -> str:
